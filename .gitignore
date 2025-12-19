@@ -1,0 +1,17 @@
+.DS_Store
+*.log
+*.out
+*.test
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.a
+*.o
+*.swp
+*.swo
+coverage.out
+dist/
+bin/
+tmp/
