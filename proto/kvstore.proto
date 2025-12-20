@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package kvstore.v1;
+
+option go_package = "github.com/aritrod3/kv-store/proto/kvstore/v1;kvstorev1";
+
+service KVStore {
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_OK = 1;
+  ERROR_CODE_NOT_FOUND = 2;
+  ERROR_CODE_INVALID_ARGUMENT = 3;
+  ERROR_CODE_INTERNAL = 4;
+  ERROR_CODE_UNAVAILABLE = 5;
+}
+
+message Status {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+enum ReadConsistency {
+  READ_CONSISTENCY_UNSPECIFIED = 0;
+  READ_CONSISTENCY_LOCAL = 1;
+  READ_CONSISTENCY_QUORUM = 2;
+}
+
+enum WriteConsistency {
+  WRITE_CONSISTENCY_UNSPECIFIED = 0;
+  WRITE_CONSISTENCY_FAST = 1;
+  WRITE_CONSISTENCY_STRONG = 2;
+}
+
+message GetRequest {
+  string key = 1;
+  ReadConsistency consistency = 2;
+}
+
+message GetResponse {
+  bytes value = 1;
+  bool found = 2;
+  uint64 version = 3;
+  int64 timestamp_unix_millis = 4;
+  bool tombstone = 5;
+  Status status = 6;
+}
+
+message PutRequest {
+  string key = 1;
+  bytes value = 2;
+  WriteConsistency consistency = 3;
+}
+
+message PutResponse {
+  uint64 version = 1;
+  int64 timestamp_unix_millis = 2;
+  Status status = 3;
+}
+
+message DeleteRequest {
+  string key = 1;
+  WriteConsistency consistency = 2;
+}
+
+message DeleteResponse {
+  uint64 version = 1;
+  int64 timestamp_unix_millis = 2;
+  Status status = 3;
+}
