@@ -46,6 +46,10 @@ func (r *Replicator) Close() {
 	r.wg.Wait()
 }
 
+func (r *Replicator) Pending() int {
+	return len(r.queue)
+}
+
 func (r *Replicator) Put(ctx context.Context, key string, value []byte, replicaIDs []string, mode WriteConsistency) (storage.Entry, error) {
 	entry, err := r.local.Put(key, value)
 	if err != nil {

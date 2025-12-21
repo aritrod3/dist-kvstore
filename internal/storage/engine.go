@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,13 +13,21 @@ type Config struct {
 	DataDir      string
 	WALFile      string
 	SnapshotFile string
+	Shards       int
 }
 
 type Engine struct {
+	shards   []shard
+	wal      *WAL
+	snap     *Snapshotter
+	dataDir  string
+	walPath  string
+	snapPath string
+}
+
+type shard struct {
 	mu   sync.RWMutex
 	data map[string]Entry
-	wal  *WAL
-	snap *Snapshotter
 }
 
 func Open(cfg Config) (*Engine, error) {
@@ -30,6 +39,9 @@ func Open(cfg Config) (*Engine, error) {
 	}
 	if cfg.SnapshotFile == "" {
 		cfg.SnapshotFile = "snapshot.bin"
+	}
+	if cfg.Shards <= 0 {
+		cfg.Shards = 16
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
@@ -48,9 +60,21 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	engine := &Engine{
-		data: data,
-		wal:  wal,
-		snap: snap,
+		shards:   make([]shard, cfg.Shards),
+		wal:      wal,
+		snap:     snap,
+		dataDir:  cfg.DataDir,
+		walPath:  walPath,
+		snapPath: snapPath,
+	}
+	for i := range engine.shards {
+		engine.shards[i] = shard{data: make(map[string]Entry)}
+	}
+	for key, entry := range data {
+		sh := engine.shardFor(key)
+		sh.mu.Lock()
+		sh.data[key] = entry
+		sh.mu.Unlock()
 	}
 	if err := wal.Replay(func(rec walRecord) error {
 		engine.applyRecord(rec)
@@ -63,9 +87,10 @@ func Open(cfg Config) (*Engine, error) {
 }
 
 func (e *Engine) Get(key string) (Entry, bool) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	entry, ok := e.data[key]
+	sh := e.shardFor(key)
+	sh.mu.RLock()
+	entry, ok := sh.data[key]
+	sh.mu.RUnlock()
 	if !ok || entry.Tombstone {
 		return Entry{}, false
 	}
@@ -74,9 +99,10 @@ func (e *Engine) Get(key string) (Entry, bool) {
 }
 
 func (e *Engine) GetEntry(key string) (Entry, bool) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	entry, ok := e.data[key]
+	sh := e.shardFor(key)
+	sh.mu.RLock()
+	entry, ok := sh.data[key]
+	sh.mu.RUnlock()
 	if !ok {
 		return Entry{}, false
 	}
@@ -89,9 +115,10 @@ func (e *Engine) Put(key string, value []byte) (Entry, error) {
 		return Entry{}, errors.New("key required")
 	}
 	now := time.Now().UnixMilli()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	prev := e.data[key]
+	sh := e.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	prev := sh.data[key]
 	entry := Entry{
 		Value:               cloneBytes(value),
 		Version:             prev.Version + 1,
@@ -109,7 +136,7 @@ func (e *Engine) Put(key string, value []byte) (Entry, error) {
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, err
 	}
-	e.data[key] = entry
+	sh.data[key] = entry
 	return entry, nil
 }
 
@@ -118,9 +145,10 @@ func (e *Engine) Delete(key string) (Entry, error) {
 		return Entry{}, errors.New("key required")
 	}
 	now := time.Now().UnixMilli()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	prev := e.data[key]
+	sh := e.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	prev := sh.data[key]
 	entry := Entry{
 		Value:               nil,
 		Version:             prev.Version + 1,
@@ -138,7 +166,7 @@ func (e *Engine) Delete(key string) (Entry, error) {
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, err
 	}
-	e.data[key] = entry
+	sh.data[key] = entry
 	return entry, nil
 }
 
@@ -146,9 +174,10 @@ func (e *Engine) ApplyRemote(key string, entry Entry) (Entry, bool, error) {
 	if key == "" {
 		return Entry{}, false, errors.New("key required")
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	prev := e.data[key]
+	sh := e.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	prev := sh.data[key]
 	if prev.Version >= entry.Version {
 		return prev, false, nil
 	}
@@ -167,18 +196,21 @@ func (e *Engine) ApplyRemote(key string, entry Entry) (Entry, bool, error) {
 		return Entry{}, false, err
 	}
 	entry.Value = cloneBytes(entry.Value)
-	e.data[key] = entry
+	sh.data[key] = entry
 	return entry, true, nil
 }
 
 func (e *Engine) CreateSnapshot() error {
-	e.mu.RLock()
-	copyData := make(map[string]Entry, len(e.data))
-	for k, v := range e.data {
-		v.Value = cloneBytes(v.Value)
-		copyData[k] = v
+	copyData := make(map[string]Entry)
+	for i := range e.shards {
+		sh := &e.shards[i]
+		sh.mu.RLock()
+		for k, v := range sh.data {
+			v.Value = cloneBytes(v.Value)
+			copyData[k] = v
+		}
+		sh.mu.RUnlock()
 	}
-	e.mu.RUnlock()
 	if err := e.snap.Save(copyData); err != nil {
 		return err
 	}
@@ -189,6 +221,14 @@ func (e *Engine) Close() error {
 	return e.wal.Close()
 }
 
+func (e *Engine) WALPath() string {
+	return e.walPath
+}
+
+func (e *Engine) SnapshotPath() string {
+	return e.snapPath
+}
+
 func (e *Engine) applyRecord(rec walRecord) {
 	entry := Entry{
 		Value:               cloneBytes(rec.Value),
@@ -196,9 +236,21 @@ func (e *Engine) applyRecord(rec walRecord) {
 		TimestampUnixMillis: rec.TimestampUnixMillis,
 		Tombstone:           rec.Tombstone,
 	}
-	e.mu.Lock()
-	e.data[rec.Key] = entry
-	e.mu.Unlock()
+	sh := e.shardFor(rec.Key)
+	sh.mu.Lock()
+	sh.data[rec.Key] = entry
+	sh.mu.Unlock()
+}
+
+func (e *Engine) shardFor(key string) *shard {
+	idx := int(hashKey(key)) % len(e.shards)
+	return &e.shards[idx]
+}
+
+func hashKey(key string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return h.Sum32()
 }
 
 func cloneBytes(in []byte) []byte {

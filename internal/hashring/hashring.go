@@ -96,6 +96,47 @@ func (r *Ring) GetNode(key string) (Node, error) {
 	return node, nil
 }
 
+func (r *Ring) GetNodes(key string, count int) ([]Node, error) {
+	if key == "" {
+		return nil, errors.New("key required")
+	}
+	if count <= 0 {
+		return nil, errors.New("count must be positive")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.positions) == 0 {
+		return nil, errors.New("ring is empty")
+	}
+	if count > len(r.nodes) {
+		count = len(r.nodes)
+	}
+	pos := hashPosition(key)
+	start := sort.Search(len(r.positions), func(i int) bool { return r.positions[i] >= pos })
+	if start == len(r.positions) {
+		start = 0
+	}
+	nodes := make([]Node, 0, count)
+	seen := make(map[string]struct{})
+	for i := 0; i < len(r.positions) && len(nodes) < count; i++ {
+		idx := (start + i) % len(r.positions)
+		nodeID := r.posToNodeID[r.positions[idx]]
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		node, ok := r.nodes[nodeID]
+		if !ok {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		nodes = append(nodes, node)
+	}
+	if len(nodes) == 0 {
+		return nil, errors.New("no nodes available")
+	}
+	return nodes, nil
+}
+
 func (r *Ring) Nodes() []Node {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

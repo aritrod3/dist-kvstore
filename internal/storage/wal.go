@@ -54,7 +54,11 @@ func (w *WAL) Append(rec walRecord) error {
 }
 
 func (w *WAL) Replay(apply func(walRecord) error) error {
-	file, err := os.Open(w.path)
+	return ReplayWALFile(w.path, apply)
+}
+
+func ReplayWALFile(path string, apply func(walRecord) error) error {
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
