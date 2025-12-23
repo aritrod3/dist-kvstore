@@ -19,8 +19,7 @@ Client -> Coordinator -> Primary -> Replicas
 - WAL + snapshots for durability
 
 ## Consistency Model
-- Default: read-your-writes via coordinator routing
-- Reads: local (fast) or quorum (strong)
+- Default: local reads (fast), optional quorum reads (strong)
 - Writes: fast (primary ack) or strong (majority ack)
 - Conflict resolution: version, then timestamp
 

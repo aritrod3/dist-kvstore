@@ -21,6 +21,7 @@ type Manager struct {
 	nodes            map[string]*NodeState
 	heartbeatTimeout time.Duration
 	metrics          metrics.Recorder
+	onRejoin         func(nodeID string)
 }
 
 func NewManager(virtualNodes int, heartbeatTimeout time.Duration, metrics metrics.Recorder) (*Manager, error) {
@@ -40,6 +41,10 @@ func NewManager(virtualNodes int, heartbeatTimeout time.Duration, metrics metric
 }
 
 func (m *Manager) Register(node hashring.Node) error {
+	return m.RegisterAt(node, time.Now())
+}
+
+func (m *Manager) RegisterAt(node hashring.Node, now time.Time) error {
 	if node.ID == "" {
 		return errors.New("node id required")
 	}
@@ -53,7 +58,7 @@ func (m *Manager) Register(node hashring.Node) error {
 	}
 	m.nodes[node.ID] = &NodeState{
 		Node:          node,
-		LastHeartbeat: time.Now(),
+		LastHeartbeat: now,
 		Alive:         true,
 	}
 	if m.metrics != nil {
@@ -63,6 +68,10 @@ func (m *Manager) Register(node hashring.Node) error {
 }
 
 func (m *Manager) UpdateHeartbeat(nodeID string) error {
+	return m.UpdateHeartbeatAt(nodeID, time.Now())
+}
+
+func (m *Manager) UpdateHeartbeatAt(nodeID string, now time.Time) error {
 	if nodeID == "" {
 		return errors.New("node id required")
 	}
@@ -72,15 +81,24 @@ func (m *Manager) UpdateHeartbeat(nodeID string) error {
 	if !ok {
 		return errors.New("node not registered")
 	}
-	state.LastHeartbeat = time.Now()
+	state.LastHeartbeat = now
 	if !state.Alive {
 		state.Alive = true
 		_ = m.ring.AddNode(state.Node)
 		if m.metrics != nil {
 			m.metrics.SetNodeAlive(state.Node.ID, true)
 		}
+		if m.onRejoin != nil {
+			m.onRejoin(nodeID)
+		}
 	}
 	return nil
+}
+
+func (m *Manager) SetOnRejoin(fn func(nodeID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onRejoin = fn
 }
 
 func (m *Manager) DetectFailures(now time.Time) []string {

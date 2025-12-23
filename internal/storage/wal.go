@@ -20,6 +20,7 @@ type walRecord struct {
 	Version             uint64
 	TimestampUnixMillis int64
 	Tombstone           bool
+	Seq                 uint64
 }
 
 type WAL struct {

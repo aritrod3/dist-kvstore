@@ -12,33 +12,34 @@ type Snapshotter struct {
 
 type snapshotPayload struct {
 	Data map[string]Entry
+	Seq  uint64
 }
 
 func NewSnapshotter(path string) *Snapshotter {
 	return &Snapshotter{path: path}
 }
 
-func (s *Snapshotter) Load() (map[string]Entry, error) {
+func (s *Snapshotter) Load() (map[string]Entry, uint64, error) {
 	file, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]Entry{}, nil
+			return map[string]Entry{}, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
 	dec := gob.NewDecoder(file)
 	var payload snapshotPayload
 	if err := dec.Decode(&payload); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if payload.Data == nil {
-		return map[string]Entry{}, nil
+		return map[string]Entry{}, payload.Seq, nil
 	}
-	return payload.Data, nil
+	return payload.Data, payload.Seq, nil
 }
 
-func (s *Snapshotter) Save(data map[string]Entry) error {
+func (s *Snapshotter) Save(data map[string]Entry, seq uint64) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
@@ -48,7 +49,7 @@ func (s *Snapshotter) Save(data map[string]Entry) error {
 		return err
 	}
 	enc := gob.NewEncoder(tmp)
-	if err := enc.Encode(snapshotPayload{Data: data}); err != nil {
+	if err := enc.Encode(snapshotPayload{Data: data, Seq: seq}); err != nil {
 		tmp.Close()
 		return err
 	}

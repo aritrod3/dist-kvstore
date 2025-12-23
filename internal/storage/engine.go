@@ -10,19 +10,29 @@ import (
 )
 
 type Config struct {
-	DataDir      string
-	WALFile      string
-	SnapshotFile string
-	Shards       int
+	DataDir          string
+	WALFile          string
+	SnapshotFile     string
+	Shards           int
+	SnapshotEvery    uint64
+	SnapshotInterval time.Duration
 }
 
 type Engine struct {
-	shards   []shard
-	wal      *WAL
-	snap     *Snapshotter
-	dataDir  string
-	walPath  string
-	snapPath string
+	shards           []shard
+	wal              *WAL
+	snap             *Snapshotter
+	dataDir          string
+	walPath          string
+	snapPath         string
+	seqMu            sync.Mutex
+	seq              uint64
+	snapshotMu       sync.Mutex
+	lastSnapshotSeq  uint64
+	snapshotEvery    uint64
+	snapshotInterval time.Duration
+	snapshotStop     chan struct{}
+	snapshotDone     chan struct{}
 }
 
 type shard struct {
@@ -43,6 +53,9 @@ func Open(cfg Config) (*Engine, error) {
 	if cfg.Shards <= 0 {
 		cfg.Shards = 16
 	}
+	if cfg.SnapshotEvery == 0 {
+		cfg.SnapshotEvery = 1000
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -54,18 +67,22 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	snap := NewSnapshotter(snapPath)
-	data, err := snap.Load()
+	data, seq, err := snap.Load()
 	if err != nil {
 		wal.Close()
 		return nil, err
 	}
 	engine := &Engine{
-		shards:   make([]shard, cfg.Shards),
-		wal:      wal,
-		snap:     snap,
-		dataDir:  cfg.DataDir,
-		walPath:  walPath,
-		snapPath: snapPath,
+		shards:           make([]shard, cfg.Shards),
+		wal:              wal,
+		snap:             snap,
+		dataDir:          cfg.DataDir,
+		walPath:          walPath,
+		snapPath:         snapPath,
+		seq:              seq,
+		lastSnapshotSeq:  seq,
+		snapshotEvery:    cfg.SnapshotEvery,
+		snapshotInterval: cfg.SnapshotInterval,
 	}
 	for i := range engine.shards {
 		engine.shards[i] = shard{data: make(map[string]Entry)}
@@ -78,11 +95,13 @@ func Open(cfg Config) (*Engine, error) {
 	}
 	if err := wal.Replay(func(rec walRecord) error {
 		engine.applyRecord(rec)
+		engine.updateSeq(rec.Seq)
 		return nil
 	}); err != nil {
 		wal.Close()
 		return nil, err
 	}
+	engine.startSnapshotLoop()
 	return engine, nil
 }
 
@@ -115,6 +134,7 @@ func (e *Engine) Put(key string, value []byte) (Entry, error) {
 		return Entry{}, errors.New("key required")
 	}
 	now := time.Now().UnixMilli()
+	seq := e.nextSeq()
 	sh := e.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -132,11 +152,15 @@ func (e *Engine) Put(key string, value []byte) (Entry, error) {
 		Version:             entry.Version,
 		TimestampUnixMillis: now,
 		Tombstone:           false,
+		Seq:                 seq,
 	}
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, err
 	}
 	sh.data[key] = entry
+	if err := e.maybeSnapshot(); err != nil {
+		return Entry{}, err
+	}
 	return entry, nil
 }
 
@@ -145,6 +169,7 @@ func (e *Engine) Delete(key string) (Entry, error) {
 		return Entry{}, errors.New("key required")
 	}
 	now := time.Now().UnixMilli()
+	seq := e.nextSeq()
 	sh := e.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -162,11 +187,15 @@ func (e *Engine) Delete(key string) (Entry, error) {
 		Version:             entry.Version,
 		TimestampUnixMillis: now,
 		Tombstone:           true,
+		Seq:                 seq,
 	}
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, err
 	}
 	sh.data[key] = entry
+	if err := e.maybeSnapshot(); err != nil {
+		return Entry{}, err
+	}
 	return entry, nil
 }
 
@@ -181,6 +210,7 @@ func (e *Engine) ApplyRemote(key string, entry Entry) (Entry, bool, error) {
 	if prev.Version >= entry.Version {
 		return prev, false, nil
 	}
+	seq := e.nextSeq()
 	rec := walRecord{
 		Op:                  walOpPut,
 		Key:                 key,
@@ -188,6 +218,7 @@ func (e *Engine) ApplyRemote(key string, entry Entry) (Entry, bool, error) {
 		Version:             entry.Version,
 		TimestampUnixMillis: entry.TimestampUnixMillis,
 		Tombstone:           entry.Tombstone,
+		Seq:                 seq,
 	}
 	if entry.Tombstone {
 		rec.Op = walOpDelete
@@ -197,6 +228,9 @@ func (e *Engine) ApplyRemote(key string, entry Entry) (Entry, bool, error) {
 	}
 	entry.Value = cloneBytes(entry.Value)
 	sh.data[key] = entry
+	if err := e.maybeSnapshot(); err != nil {
+		return Entry{}, false, err
+	}
 	return entry, true, nil
 }
 
@@ -211,13 +245,17 @@ func (e *Engine) CreateSnapshot() error {
 		}
 		sh.mu.RUnlock()
 	}
-	if err := e.snap.Save(copyData); err != nil {
+	if err := e.snap.Save(copyData, e.LastSeq()); err != nil {
 		return err
 	}
 	return e.wal.Reset()
 }
 
 func (e *Engine) Close() error {
+	if e.snapshotStop != nil {
+		close(e.snapshotStop)
+		<-e.snapshotDone
+	}
 	return e.wal.Close()
 }
 
@@ -240,6 +278,42 @@ func (e *Engine) WALSizeBytes() (int64, error) {
 	return info.Size(), nil
 }
 
+func (e *Engine) LastSeq() uint64 {
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+	return e.seq
+}
+
+func (e *Engine) CompactTombstones(ttl time.Duration, now time.Time) (int, error) {
+	if ttl <= 0 {
+		return 0, errors.New("ttl must be positive")
+	}
+	removed := 0
+	for i := range e.shards {
+		sh := &e.shards[i]
+		sh.mu.Lock()
+		for key, entry := range sh.data {
+			if !entry.Tombstone {
+				continue
+			}
+			age := time.Duration(now.UnixMilli()-entry.TimestampUnixMillis) * time.Millisecond
+			if age >= ttl {
+				delete(sh.data, key)
+				removed++
+			}
+		}
+		sh.mu.Unlock()
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	if err := e.CreateSnapshot(); err != nil {
+		return removed, err
+	}
+	e.setLastSnapshotSeq(e.LastSeq())
+	return removed, nil
+}
+
 func (e *Engine) applyRecord(rec walRecord) {
 	entry := Entry{
 		Value:               cloneBytes(rec.Value),
@@ -251,6 +325,79 @@ func (e *Engine) applyRecord(rec walRecord) {
 	sh.mu.Lock()
 	sh.data[rec.Key] = entry
 	sh.mu.Unlock()
+}
+
+func (e *Engine) nextSeq() uint64 {
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+	e.seq++
+	return e.seq
+}
+
+func (e *Engine) updateSeq(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	e.seqMu.Lock()
+	if seq > e.seq {
+		e.seq = seq
+	}
+	e.seqMu.Unlock()
+}
+
+func (e *Engine) startSnapshotLoop() {
+	if e.snapshotInterval <= 0 {
+		return
+	}
+	e.snapshotStop = make(chan struct{})
+	e.snapshotDone = make(chan struct{})
+	ticker := time.NewTicker(e.snapshotInterval)
+	go func() {
+		defer close(e.snapshotDone)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = e.snapshotNow()
+			case <-e.snapshotStop:
+				return
+			}
+		}
+	}()
+}
+
+func (e *Engine) maybeSnapshot() error {
+	if e.snapshotEvery == 0 {
+		return nil
+	}
+	e.snapshotMu.Lock()
+	defer e.snapshotMu.Unlock()
+	if e.LastSeq()-e.lastSnapshotSeq < e.snapshotEvery {
+		return nil
+	}
+	if err := e.CreateSnapshot(); err != nil {
+		return err
+	}
+	e.lastSnapshotSeq = e.LastSeq()
+	return nil
+}
+
+func (e *Engine) snapshotNow() error {
+	e.snapshotMu.Lock()
+	defer e.snapshotMu.Unlock()
+	if err := e.CreateSnapshot(); err != nil {
+		return err
+	}
+	e.lastSnapshotSeq = e.LastSeq()
+	return nil
+}
+
+func (e *Engine) setLastSnapshotSeq(seq uint64) {
+	e.snapshotMu.Lock()
+	if seq > e.lastSnapshotSeq {
+		e.lastSnapshotSeq = seq
+	}
+	e.snapshotMu.Unlock()
 }
 
 func (e *Engine) shardFor(key string) *shard {

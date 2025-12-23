@@ -11,10 +11,11 @@ func (e *Engine) RestoreFrom(snapshotPath string, walPath string) error {
 	if snapshotPath == "" || walPath == "" {
 		return errors.New("snapshot and wal paths required")
 	}
-	data, err := NewSnapshotter(snapshotPath).Load()
+	data, seq, err := NewSnapshotter(snapshotPath).Load()
 	if err != nil {
 		return err
 	}
+	e.updateSeq(seq)
 	for i := range e.shards {
 		e.shards[i].mu.Lock()
 	}
@@ -27,6 +28,7 @@ func (e *Engine) RestoreFrom(snapshotPath string, walPath string) error {
 	}
 	if err := ReplayWALFile(walPath, func(rec walRecord) error {
 		e.applyRecordToData(rec)
+		e.updateSeq(rec.Seq)
 		return nil
 	}); err != nil {
 		for i := range e.shards {
@@ -51,6 +53,7 @@ func (e *Engine) RestoreFrom(snapshotPath string, walPath string) error {
 		return err
 	}
 	e.wal = wal
+	e.setLastSnapshotSeq(e.LastSeq())
 	return nil
 }
 
