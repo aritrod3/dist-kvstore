@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
+	"github.com/aritrod3/kv-store/internal/metrics"
 	"github.com/aritrod3/kv-store/internal/storage"
 )
 
@@ -25,18 +27,27 @@ type ReplicaReader interface {
 type ReadCoordinator struct {
 	localReader func(key string) (storage.Entry, bool)
 	reader      ReplicaReader
+	metrics     metrics.Recorder
 }
 
-func NewReadCoordinator(localReader func(key string) (storage.Entry, bool), reader ReplicaReader) *ReadCoordinator {
+func NewReadCoordinator(localReader func(key string) (storage.Entry, bool), reader ReplicaReader, metrics metrics.Recorder) *ReadCoordinator {
 	return &ReadCoordinator{
 		localReader: localReader,
 		reader:      reader,
+		metrics:     metrics,
 	}
 }
 
 func (r *ReadCoordinator) Get(ctx context.Context, key string, replicaIDs []string, mode ReadConsistency) (storage.Entry, bool, error) {
+	start := time.Now()
+	defer func() {
+		if r.metrics != nil {
+			r.metrics.ObserveLatency("get", time.Since(start))
+		}
+	}()
 	if mode == ReadConsistencyLocal || len(replicaIDs) == 0 {
-		return r.localReader(key)
+		entry, ok := r.localReader(key)
+		return entry, ok, nil
 	}
 	total := len(replicaIDs) + 1
 	required := total/2 + 1

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aritrod3/kv-store/internal/hashring"
+	"github.com/aritrod3/kv-store/internal/metrics"
 )
 
 type NodeState struct {
@@ -19,9 +20,10 @@ type Manager struct {
 	ring             *hashring.Ring
 	nodes            map[string]*NodeState
 	heartbeatTimeout time.Duration
+	metrics          metrics.Recorder
 }
 
-func NewManager(virtualNodes int, heartbeatTimeout time.Duration) (*Manager, error) {
+func NewManager(virtualNodes int, heartbeatTimeout time.Duration, metrics metrics.Recorder) (*Manager, error) {
 	ring, err := hashring.New(virtualNodes)
 	if err != nil {
 		return nil, err
@@ -33,6 +35,7 @@ func NewManager(virtualNodes int, heartbeatTimeout time.Duration) (*Manager, err
 		ring:             ring,
 		nodes:            make(map[string]*NodeState),
 		heartbeatTimeout: heartbeatTimeout,
+		metrics:          metrics,
 	}, nil
 }
 
@@ -53,6 +56,9 @@ func (m *Manager) Register(node hashring.Node) error {
 		LastHeartbeat: time.Now(),
 		Alive:         true,
 	}
+	if m.metrics != nil {
+		m.metrics.SetNodeAlive(node.ID, true)
+	}
 	return nil
 }
 
@@ -70,6 +76,9 @@ func (m *Manager) UpdateHeartbeat(nodeID string) error {
 	if !state.Alive {
 		state.Alive = true
 		_ = m.ring.AddNode(state.Node)
+		if m.metrics != nil {
+			m.metrics.SetNodeAlive(state.Node.ID, true)
+		}
 	}
 	return nil
 }
@@ -85,6 +94,9 @@ func (m *Manager) DetectFailures(now time.Time) []string {
 		if now.Sub(state.LastHeartbeat) > m.heartbeatTimeout {
 			state.Alive = false
 			_ = m.ring.RemoveNode(id)
+			if m.metrics != nil {
+				m.metrics.SetNodeAlive(id, false)
+			}
 			failed = append(failed, id)
 		}
 	}

@@ -1,0 +1,9 @@
+node_id: node-1
+address: 0.0.0.0:9001
+metrics_address: 0.0.0.0:9101
+data_dir: /data/node-1
+virtual_nodes: 64
+replication_factor: 3
+cluster_peers:
+  - node-2@kvstore-2:9002
+  - node-3@kvstore-3:9003

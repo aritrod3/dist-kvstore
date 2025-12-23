@@ -229,6 +229,17 @@ func (e *Engine) SnapshotPath() string {
 	return e.snapPath
 }
 
+func (e *Engine) WALSizeBytes() (int64, error) {
+	info, err := os.Stat(e.walPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func (e *Engine) applyRecord(rec walRecord) {
 	entry := Entry{
 		Value:               cloneBytes(rec.Value),

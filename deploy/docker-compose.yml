@@ -1,0 +1,36 @@
+version: "3.9"
+services:
+  kvstore-1:
+    image: golang:1.22
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - kvstore-1-data:/data
+    command: ["go", "run", "./cmd/kvstore", "-config", "/app/deploy/node-1.yaml"]
+    ports:
+      - "9001:9001"
+      - "9101:9101"
+  kvstore-2:
+    image: golang:1.22
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - kvstore-2-data:/data
+    command: ["go", "run", "./cmd/kvstore", "-config", "/app/deploy/node-2.yaml"]
+    ports:
+      - "9002:9002"
+      - "9102:9102"
+  kvstore-3:
+    image: golang:1.22
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - kvstore-3-data:/data
+    command: ["go", "run", "./cmd/kvstore", "-config", "/app/deploy/node-3.yaml"]
+    ports:
+      - "9003:9003"
+      - "9103:9103"
+volumes:
+  kvstore-1-data:
+  kvstore-2-data:
+  kvstore-3-data:
