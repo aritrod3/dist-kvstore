@@ -1,12 +1,12 @@
 # Distributed KV Store
 
-Production-style, replicated key–value store with sharding, WAL-backed durability, and configurable consistency.
+A small distributed KV store I built to show real systems choices, not a toy. It’s opinionated: replication factor is fixed at 3, writes hit a WAL on every operation, and there’s a clear line between fast and strong consistency.
 
 ## Goals
-- Horizontal scalability
-- Fault tolerance
-- Predictable consistency guarantees
-- Measurable latency and throughput
+- Scale out with consistent hashing and virtual nodes.
+- Keep data safe with WAL + snapshots.
+- Make consistency tradeoffs explicit (fast vs strong).
+- Measure latency and replication lag, not hand‑wave it.
 
 ## Architecture (high level)
 ```
@@ -15,27 +15,27 @@ Client -> Coordinator -> Primary -> Replicas
                 +--> Read path (local or quorum)
 ```
 - Consistent hashing for partitioning
-- Replication factor N=3
+- Replication factor N=3 (enforced in code)
 - WAL + snapshots for durability
 
 ## Consistency Model
-- Default: local reads (fast), optional quorum reads (strong)
-- Writes: fast (primary ack) or strong (majority ack)
-- Conflict resolution: version, then timestamp
+- Default is local reads (fast), quorum reads are explicit.
+- Writes are either fast (primary ack) or strong (majority ack).
+- Conflict resolution is version, then timestamp. Simple and predictable.
 
 ## Failure Scenarios
-- Primary failure: detected via heartbeat timeout; ring updated; new primary chosen
-- Replica failure: catch-up via snapshot transfer + WAL replay
-- Network partition: strong writes can reject to preserve consistency; fast writes continue
+- Primary failure: heartbeat timeout drops it from the ring, a new primary is chosen.
+- Replica failure: automatic catch‑up via snapshot + WAL replay.
+- Network partition: strong writes can fail; fast writes continue and may diverge.
 
 ## Tradeoffs
-- Append-only WAL for durability and fast writes, slower compaction
-- Quorum reads/writes increase latency but improve consistency
-- Shard locks avoid global contention, add per-key overhead
+- WAL fsync on every write keeps durability simple, but it’s the throughput bottleneck.
+- Quorum reads/writes cost latency. I still keep them because I want the option.
+- Shard locks avoid a global lock, but the WAL mutex still serializes writes.
 
 ## Benchmarks
 - `go test ./internal/storage -bench=.` for storage engine latency
-- Metrics exposed via Prometheus for p50/p95 and throughput tracking
+- Prometheus exposes p50/p95 latency, WAL size, replication lag
 
 ## Usage
 - `make test` or `go test ./...`
@@ -43,12 +43,12 @@ Client -> Coordinator -> Primary -> Replicas
 - `docker compose -f deploy/docker-compose.yml up`
 
 ## Resume Bullet
-Built a distributed key–value store supporting sharding, replication, WAL-backed durability, and configurable consistency guarantees; implemented failure recovery, replica catch-up, and load-balanced partitioning with consistent hashing.
+Built a distributed key–value store with sharding, N=3 replication, WAL‑backed durability, and strong/fast consistency modes; implemented crash recovery, replica catch‑up, and quorum‑based writes.
 
 ## Future Work
-- Anti-entropy repair for replica divergence
-- On-disk SSTables with compaction scheduling
-- Cross-node tracing and distributed profiling
+- Anti‑entropy repair for replica drift.
+- SSTables + compaction scheduling.
+- Real gRPC transport and cross‑node tracing.
 
 ## Repo Layout
 - `cmd/` entrypoints
@@ -59,4 +59,4 @@ Built a distributed key–value store supporting sharding, replication, WAL-back
 - `scripts/` helper scripts
 
 ## Status
-Initial scaffold. Implementation follows the 10-step plan.
+Core storage, replication, failure handling, and observability are implemented. Transport is still stubbed.

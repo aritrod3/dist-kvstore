@@ -10,29 +10,31 @@ import (
 )
 
 type Config struct {
-	DataDir          string
-	WALFile          string
-	SnapshotFile     string
-	Shards           int
-	SnapshotEvery    uint64
-	SnapshotInterval time.Duration
+	DataDir            string
+	WALFile            string
+	SnapshotFile       string
+	Shards             int
+	SnapshotEvery      uint64
+	SnapshotInterval   time.Duration
+	AfterWALAppendHook func() error
 }
 
 type Engine struct {
-	shards           []shard
-	wal              *WAL
-	snap             *Snapshotter
-	dataDir          string
-	walPath          string
-	snapPath         string
-	seqMu            sync.Mutex
-	seq              uint64
-	snapshotMu       sync.Mutex
-	lastSnapshotSeq  uint64
-	snapshotEvery    uint64
-	snapshotInterval time.Duration
-	snapshotStop     chan struct{}
-	snapshotDone     chan struct{}
+	shards             []shard
+	wal                *WAL
+	snap               *Snapshotter
+	dataDir            string
+	walPath            string
+	snapPath           string
+	seqMu              sync.Mutex
+	seq                uint64
+	snapshotMu         sync.Mutex
+	lastSnapshotSeq    uint64
+	snapshotEvery      uint64
+	snapshotInterval   time.Duration
+	snapshotStop       chan struct{}
+	snapshotDone       chan struct{}
+	afterWALAppendHook func() error
 }
 
 type shard struct {
@@ -73,16 +75,17 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	engine := &Engine{
-		shards:           make([]shard, cfg.Shards),
-		wal:              wal,
-		snap:             snap,
-		dataDir:          cfg.DataDir,
-		walPath:          walPath,
-		snapPath:         snapPath,
-		seq:              seq,
-		lastSnapshotSeq:  seq,
-		snapshotEvery:    cfg.SnapshotEvery,
-		snapshotInterval: cfg.SnapshotInterval,
+		shards:             make([]shard, cfg.Shards),
+		wal:                wal,
+		snap:               snap,
+		dataDir:            cfg.DataDir,
+		walPath:            walPath,
+		snapPath:           snapPath,
+		seq:                seq,
+		lastSnapshotSeq:    seq,
+		snapshotEvery:      cfg.SnapshotEvery,
+		snapshotInterval:   cfg.SnapshotInterval,
+		afterWALAppendHook: cfg.AfterWALAppendHook,
 	}
 	for i := range engine.shards {
 		engine.shards[i] = shard{data: make(map[string]Entry)}
@@ -157,6 +160,11 @@ func (e *Engine) Put(key string, value []byte) (Entry, error) {
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, err
 	}
+	if e.afterWALAppendHook != nil {
+		if err := e.afterWALAppendHook(); err != nil {
+			return Entry{}, err
+		}
+	}
 	sh.data[key] = entry
 	if err := e.maybeSnapshot(); err != nil {
 		return Entry{}, err
@@ -192,6 +200,11 @@ func (e *Engine) Delete(key string) (Entry, error) {
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, err
 	}
+	if e.afterWALAppendHook != nil {
+		if err := e.afterWALAppendHook(); err != nil {
+			return Entry{}, err
+		}
+	}
 	sh.data[key] = entry
 	if err := e.maybeSnapshot(); err != nil {
 		return Entry{}, err
@@ -225,6 +238,11 @@ func (e *Engine) ApplyRemote(key string, entry Entry) (Entry, bool, error) {
 	}
 	if err := e.wal.Append(rec); err != nil {
 		return Entry{}, false, err
+	}
+	if e.afterWALAppendHook != nil {
+		if err := e.afterWALAppendHook(); err != nil {
+			return Entry{}, false, err
+		}
 	}
 	entry.Value = cloneBytes(entry.Value)
 	sh.data[key] = entry

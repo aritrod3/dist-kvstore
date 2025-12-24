@@ -32,9 +32,9 @@ type Replicator struct {
 	queue chan func()
 	wg    sync.WaitGroup
 
-	metrics metrics.Recorder
-	tracer  observability.Tracer
-	logger  observability.Logger
+	metrics    metrics.Recorder
+	tracer     observability.Tracer
+	logger     observability.Logger
 	propagator propagation.TextMapPropagator
 }
 
@@ -49,13 +49,13 @@ func NewReplicator(local *storage.Engine, writer ReplicaWriter, workers int, met
 		propagator = propagation.TraceContext{}
 	}
 	r := &Replicator{
-		local:   local,
-		writer:  writer,
-		workers: workers,
-		queue:   make(chan func(), 1024),
-		metrics: metrics,
-		tracer:  tracer,
-		logger:  logger,
+		local:      local,
+		writer:     writer,
+		workers:    workers,
+		queue:      make(chan func(), 1024),
+		metrics:    metrics,
+		tracer:     tracer,
+		logger:     logger,
 		propagator: propagator,
 	}
 	for i := 0; i < r.workers; i++ {
@@ -154,13 +154,14 @@ func (r *Replicator) replicateAsync(ctx context.Context, key string, entry stora
 		parentCtx := ctx
 		r.queue <- func() {
 			ctx, span := r.tracer.Start(parentCtx, "replication.send")
-			defer span.End(nil)
 			meta := r.injectMeta(ctx)
 			if tombstone {
-				_ = r.callDelete(ctx, replicaID, key, entry, meta)
+				err := r.callDelete(ctx, replicaID, key, entry, meta)
+				span.End(err)
 				return
 			}
-			_ = r.callPut(ctx, replicaID, key, entry, meta)
+			err := r.callPut(ctx, replicaID, key, entry, meta)
+			span.End(err)
 		}
 	}
 	r.updateLag()
@@ -178,7 +179,6 @@ func (r *Replicator) replicateSync(ctx context.Context, key string, entry storag
 		go func() {
 			defer wg.Done()
 			ctx, span := r.tracer.Start(ctx, "replication.send")
-			defer span.End(nil)
 			meta := r.injectMeta(ctx)
 			var err error
 			if tombstone {
@@ -186,6 +186,7 @@ func (r *Replicator) replicateSync(ctx context.Context, key string, entry storag
 			} else {
 				err = r.callPut(ctx, replicaID, key, entry, meta)
 			}
+			span.End(err)
 			if err == nil {
 				mu.Lock()
 				acks++
