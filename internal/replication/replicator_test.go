@@ -37,7 +37,7 @@ func TestStrongWriteQuorumFailure(t *testing.T) {
 		"r1": errors.New("down"),
 		"r2": errors.New("down"),
 	}}
-	replicator := NewReplicator(engine, writer, 1, nil, nil, nil, nil)
+	replicator := NewReplicator(engine, writer, 1, nil, nil, nil, nil, nil)
 	defer replicator.Close()
 
 	_, err = replicator.Put(context.Background(), "key", []byte("v"), []string{"r1", "r2"}, WriteConsistencyStrong)
@@ -56,7 +56,7 @@ func TestReplicaDownStrongWrite(t *testing.T) {
 	writer := &fakeWriter{fail: map[string]error{
 		"r1": errors.New("down"),
 	}}
-	replicator := NewReplicator(engine, writer, 1, nil, nil, nil, nil)
+	replicator := NewReplicator(engine, writer, 1, nil, nil, nil, nil, nil)
 	defer replicator.Close()
 
 	_, err = replicator.Put(context.Background(), "key", []byte("v"), []string{"r1", "r2"}, WriteConsistencyStrong)
@@ -76,7 +76,7 @@ func TestReplicaDownFastWrite(t *testing.T) {
 		"r1": errors.New("down"),
 		"r2": errors.New("down"),
 	}}
-	replicator := NewReplicator(engine, writer, 1, nil, nil, nil, nil)
+	replicator := NewReplicator(engine, writer, 1, nil, nil, nil, nil, nil)
 	defer replicator.Close()
 
 	_, err = replicator.Put(context.Background(), "key", []byte("v"), []string{"r1", "r2"}, WriteConsistencyFast)

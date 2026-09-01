@@ -32,13 +32,14 @@ type Replicator struct {
 	queue chan func()
 	wg    sync.WaitGroup
 
-	metrics    metrics.Recorder
-	tracer     observability.Tracer
-	logger     observability.Logger
-	propagator propagation.TextMapPropagator
+	metrics       metrics.Recorder
+	tracer        observability.Tracer
+	logger        observability.Logger
+	propagator    propagation.TextMapPropagator
+	quorumRecorder *observability.QuorumRecorder
 }
 
-func NewReplicator(local *storage.Engine, writer ReplicaWriter, workers int, metrics metrics.Recorder, tracer observability.Tracer, logger observability.Logger, propagator propagation.TextMapPropagator) *Replicator {
+func NewReplicator(local *storage.Engine, writer ReplicaWriter, workers int, metrics metrics.Recorder, tracer observability.Tracer, logger observability.Logger, propagator propagation.TextMapPropagator, quorum *observability.QuorumRecorder) *Replicator {
 	if workers <= 0 {
 		workers = 4
 	}
@@ -49,14 +50,15 @@ func NewReplicator(local *storage.Engine, writer ReplicaWriter, workers int, met
 		propagator = propagation.TraceContext{}
 	}
 	r := &Replicator{
-		local:      local,
-		writer:     writer,
-		workers:    workers,
-		queue:      make(chan func(), 1024),
-		metrics:    metrics,
-		tracer:     tracer,
-		logger:     logger,
-		propagator: propagator,
+		local:          local,
+		writer:         writer,
+		workers:        workers,
+		queue:          make(chan func(), 1024),
+		metrics:        metrics,
+		tracer:         tracer,
+		logger:         logger,
+		propagator:     propagator,
+		quorumRecorder: quorum,
 	}
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
@@ -173,6 +175,7 @@ func (r *Replicator) replicateSync(ctx context.Context, key string, entry storag
 	acks := 1
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	qStart := time.Now()
 	for _, id := range replicaIDs {
 		replicaID := id
 		wg.Add(1)
@@ -195,6 +198,9 @@ func (r *Replicator) replicateSync(ctx context.Context, key string, entry storag
 		}()
 	}
 	wg.Wait()
+	if r.quorumRecorder != nil {
+		r.quorumRecorder.Record("write_quorum", time.Since(qStart))
+	}
 	if acks < required {
 		return ErrWriteQuorumFailed
 	}

@@ -2,6 +2,7 @@ package observability_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/aritrod3/kv-store/internal/cluster"
@@ -44,10 +45,26 @@ func TestDistributedTraceFlow(t *testing.T) {
 		t.Fatalf("register replica: %v", err)
 	}
 
+	key := ""
+	for i := 0; i < 20000; i++ {
+		k := fmt.Sprintf("trace-key-%d", i)
+		p, err := manager.PrimaryForKey(k)
+		if err != nil {
+			t.Fatalf("primary: %v", err)
+		}
+		if p.ID == "node-1" {
+			key = k
+			break
+		}
+	}
+	if key == "" {
+		t.Fatal("no key found for node-1 primary")
+	}
+
 	writer := replication.NewInMemoryReplicaRPC(map[string]*storage.Engine{
 		"node-2": replica,
 	}, tracer, propagator)
-	replicator := replication.NewReplicator(primary, writer, 1, nil, tracer, nil, propagator)
+	replicator := replication.NewReplicator(primary, writer, 1, nil, tracer, nil, propagator, nil)
 
 	coordinator, err := cluster.NewCoordinator("node-1", manager, 3, replicator, nil, tracer)
 	if err != nil {
@@ -55,7 +72,7 @@ func TestDistributedTraceFlow(t *testing.T) {
 	}
 
 	ctx, root := tracer.Start(context.Background(), "client.request")
-	_, err = coordinator.Put(ctx, "k1", []byte("v1"), replication.WriteConsistencyStrong)
+	_, err = coordinator.Put(ctx, key, []byte("v1"), replication.WriteConsistencyStrong)
 	root.End(err)
 	if err != nil {
 		t.Fatalf("put: %v", err)

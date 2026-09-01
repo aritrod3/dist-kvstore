@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aritrod3/kv-store/internal/metrics"
+	"github.com/aritrod3/kv-store/internal/observability"
 	"github.com/aritrod3/kv-store/internal/storage"
 )
 
@@ -25,16 +26,18 @@ type ReplicaReader interface {
 }
 
 type ReadCoordinator struct {
-	localReader func(key string) (storage.Entry, bool)
-	reader      ReplicaReader
-	metrics     metrics.Recorder
+	localReader    func(key string) (storage.Entry, bool)
+	reader         ReplicaReader
+	metrics        metrics.Recorder
+	quorumRecorder *observability.QuorumRecorder
 }
 
-func NewReadCoordinator(localReader func(key string) (storage.Entry, bool), reader ReplicaReader, metrics metrics.Recorder) *ReadCoordinator {
+func NewReadCoordinator(localReader func(key string) (storage.Entry, bool), reader ReplicaReader, metrics metrics.Recorder, quorum *observability.QuorumRecorder) *ReadCoordinator {
 	return &ReadCoordinator{
-		localReader: localReader,
-		reader:      reader,
-		metrics:     metrics,
+		localReader:    localReader,
+		reader:         reader,
+		metrics:        metrics,
+		quorumRecorder: quorum,
 	}
 }
 
@@ -58,6 +61,7 @@ func (r *ReadCoordinator) Get(ctx context.Context, key string, replicaIDs []stri
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	qStart := time.Now()
 	for _, id := range replicaIDs {
 		replicaID := id
 		wg.Add(1)
@@ -79,6 +83,9 @@ func (r *ReadCoordinator) Get(ctx context.Context, key string, replicaIDs []stri
 		}()
 	}
 	wg.Wait()
+	if r.quorumRecorder != nil {
+		r.quorumRecorder.Record("read_quorum", time.Since(qStart))
+	}
 	if responses < required {
 		return storage.Entry{}, false, ErrReadQuorumFailed
 	}
