@@ -36,18 +36,18 @@ go run ./cmd/benchmark -compare
 
 or `python3 benchmark.py -compare`.
 
-MacBookPro13,3, i7-6820HQ @ 2.70GHz, 4c/8t, 16 GB, macOS 12.7.6, Go 1.25.0 darwin/amd64. Three engines on local disk. RPC is in-process. Harness sets `SnapshotEvery` to `1<<50` so we don't hit the deadlock in Limitations.
+MacBookPro17,1, Apple M1, 8 cores (4P+4E), 8 GB, macOS 26.6.2, Go 1.27.2 darwin/arm64. Three engines on local disk. RPC is in-process. Harness sets `SnapshotEvery` to `1<<50` so we don't hit the deadlock in Limitations.
 
 192 keys hashed to `node-1`. I pinned them. Strong writes from two primaries deadlock on shard locks; there is a comment in `cmd/benchmark` about it. Mix is 50% quorum `Get`, 50% strong `Put`. Isolated: 1 goroutine, 4000 ops. Contended: 8 goroutines × 500. Time is client wall clock around `Coordinator.Get` / `Put`.
 
 One run:
 
-| scenario   | clients | ops  | throughput | p50     | p99     |
-|------------|---------|------|------------|---------|---------|
-| isolated   | 1       | 4000 | 130 ops/s  | 1.43 ms | 26.0 ms |
-| contended  | 8       | 4000 | 119 ops/s  | 63.8 ms | 226 ms  |
+| scenario   | clients | ops  | throughput | p50     | p95     | p99     |
+|------------|---------|------|------------|---------|---------|---------|
+| isolated   | 1       | 4000 | 200 ops/s  | 0.08 ms | 12.1 ms | 14.9 ms |
+| contended  | 8       | 4000 | 178 ops/s  | 42.4 ms | 110 ms  | 141 ms  |
 
-Eight clients and throughput does not move. p99 goes from 26 ms to 226 ms. That is the WAL `Sync`. Quorum wait by itself (just the replica RPCs) was p99 16.7 ms vs 116 ms.
+Eight clients and throughput does not move. p99 goes from 14.9 ms to 141 ms. That is the WAL `Sync`. Quorum wait by itself (just the replica RPCs) was p99 10.3 ms vs 108 ms.
 
 This is not a network number. `InMemoryReplicaRPC` is a function call. `go test ./internal/storage -bench=.` hangs on the snapshot deadlock. Skip it.
 
